@@ -88,8 +88,47 @@ public function messageUpdateExtract($apiData)
 
 public function messageCreateExtract($apiData)
 {
-    // Implement your logic here
-    return 'messageCreateExtract';
+ try {
+        // extract message data from webhook
+        $messageData = [
+            'id' => $apiData['message']['id'] ?? null,
+            'account_id' => $apiData['account']['id'] ?? null,
+            'conversation_id' => $apiData['conversation']['id'] ?? null,
+            'sender_id' => $apiData['message']['sender']['id'] ?? null,
+            'sender_type' => $apiData['message']['sender']['type'] ?? null,
+            'message_type' => $apiData['message']['type'] ?? null,
+            'content' => $apiData['message']['content'] ?? null,
+            'content_type' => $apiData['message']['content_type'] ?? null,
+            'status' => $apiData['message']['status'] ?? null,
+            'private' => $apiData['message']['private'] ?? false,
+            'created_at' => $apiData['message']['created_at'] ?? now(),
+            'updated_at' => $apiData['message']['updated_at'] ?? now(),
+            'payload_exist' => isset($apiData['message']['payload']) ? true : false
+        ];
+
+        // create the message
+        $message = Message::create($messageData);
+
+        // if there's payload data, store it too
+        if (isset($apiData['message']['payload'])) {
+            MessagePayload::create([
+                'message_id' => $message->id,
+                'payload' => $apiData['message']['payload']
+            ]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Message created successfully',
+            'message_id' => $message->id
+        ]);
+
+    } catch (\Exception $e) {
+        return response()->json([
+            'success' => false,
+            'error' => 'Failed to create message: ' . $e->getMessage()
+        ], 500);
+    }
 }
 public function contactUpdateExtract($apiData)
 {
