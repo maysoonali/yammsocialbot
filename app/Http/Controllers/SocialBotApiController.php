@@ -2,9 +2,13 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\WebhookEvent;
+use Carbon\Carbon;
 use Illuminate\Support\Str;
+use App\Models\WebhookEvent;
 use Illuminate\Http\Request;
+use Ramsey\Uuid\Uuid;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use App\Http\Controllers\Controller;
 
 class SocialBotApiController extends Controller
@@ -51,8 +55,8 @@ public function callExtractor(Request $REQUEST)
             return 'messageUpdateExtract($apiData)';
             
         case 'message_created':
-            //$this->messageCreateExtract($apiData);
-            return 'messageCreateExtract($apiData)';
+            
+            return ($this->messageCreateExtract($apiData)) ;
             
         case 'contact_updated':
            // $this->contactUpdateExtract($apiData);
@@ -86,11 +90,114 @@ public function messageUpdateExtract($apiData)
     return 'messageUpdateExtract';
 }
 
+
 public function messageCreateExtract($apiData)
 {
-    // Implement your logic here
-    return 'messageCreateExtract';
+    try {
+        // Helper to generate UUID if numeric
+        $uuid = fn($prefix, $id) => is_numeric($id) 
+            ? Uuid::uuid5(Uuid::NAMESPACE_DNS, "$prefix-$id")->toString() 
+            : $id;
+
+        // Handle Account
+        $accountId = $uuid('account', $apiData['account']['id'] ?? null);
+        DB::table('accounts')->updateOrInsert(
+            ['id' => $accountId],
+            ['name' => $apiData['account']['name'] ?? 'Unknown']
+        );
+
+        // Handle User (Contact)
+        $contact = $apiData['conversation']['meta']['sender'] ?? [];
+        $contactId = $uuid('user', $contact['id'] ?? null);
+        DB::table('users')->updateOrInsert(
+            ['id' => $contactId],
+            [
+                'account_id'   => $accountId,
+                'name'         => $contact['name'] ?? 'Unknown',
+                'phone_number' => $contact['phone_number'] ?? null,
+            ]
+        );
+
+        // Handle Conversation
+        $conversation = $apiData['conversation'] ?? [];
+        $conversationId = $uuid('conversation', $conversation['id'] ?? null);
+        DB::table('conversations')->updateOrInsert(
+            ['id' => $conversationId],
+            [
+                'account_id'  => $accountId,
+                'contact_id'  => $contactId,
+                'assignee_id' => null,
+                'status'      => $conversation['status'] ?? 'pending',
+                'channel'     => $conversation['channel'] ?? 'unknown',
+                'labels'      => json_encode($conversation['labels'] ?? []),
+                'created_at'  => isset($conversation['created_at']) 
+                                ? Carbon::parse($conversation['created_at'])
+                                : Carbon::now(),
+                'updated_at'  => isset($conversation['updated_at']) 
+                                ? Carbon::parse($conversation['updated_at'])
+                                : Carbon::now(),
+            ]
+        );
+
+        // Insert Message
+        $messageId = $uuid('message', $conversation['messages'][0]['id'] ?? null);
+        DB::table('messages')->insert([
+            'id'             => $messageId,
+            'account_id'     => $accountId,
+            'conversation_id'=> $conversationId,
+            'sender_id'      => $contactId,
+            'sender_type'    => $apiData['sender']['type'] ?? 'bot',
+            'message_type'   => $apiData['message_type'] ?? 'outgoing',
+            'content'        => $apiData['content'] ?? null,
+            'content_type'   => $apiData['content_type'] ?? null,
+            'status'         => $conversation['status'] ?? 'sent',
+            'private'        => $apiData['private'] ?? false,
+            'created_at'     => isset($apiData['created_at']) 
+                                ? Carbon::parse($apiData['created_at'])
+                                : Carbon::now(),
+            'updated_at'     => isset($apiData['updated_at']) 
+                                ? Carbon::parse($apiData['updated_at'])
+                                : Carbon::now(),
+            'payload_exist'  => !empty($apiData['content_attributes']['message_payload']),
+        ]);
+
+        // Insert Payload(s)
+        $payload = $apiData['content_attributes']['message_payload'] ?? null;
+        if ($payload) {
+            $mainContent = $payload['content'] ?? [];
+            
+            // Save main payload
+            DB::table('message_payloads')->insert([
+                'id'         => Str::uuid()->toString(),
+                'message_id' => $messageId,
+                'title'      => $mainContent['title'] ?? null,
+                'payload'    => json_encode($mainContent['buttons'] ?? []),
+                'type'       => $payload['content_type'] ?? null,
+                'image_url'  => $mainContent['image'] ?? null,
+                'footer'     => $mainContent['footer'] ?? null,
+            ]);
+
+            // Save each button individually
+            foreach ($mainContent['buttons'] ?? [] as $button) {
+                DB::table('message_payloads')->insert([
+                    'id'         => Str::uuid()->toString(),
+                    'message_id' => $messageId,
+                    'title'      => $button['content']['title'] ?? null,
+                    'payload'    => $button['content']['payload'] ?? null,
+                    'type'       => $button['content_type'] ?? null,
+                    'image_url'  => null,
+                    'footer'     => null,
+                ]);
+            }
+        }
+
+        return true;
+    } catch (\Exception $e) {
+        Log::error("Message Create Extract Failed: " . $e->getMessage());
+        return "Message Create Extract Failed: " . $e->getMessage();
+    }
 }
+
 public function contactUpdateExtract($apiData)
 {
     // Implement your logic here
