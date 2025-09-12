@@ -205,8 +205,70 @@ public function contactUpdateExtract($apiData)
 }
 public function conversationUpdateExtract($apiData)
 {
-    // Implement your logic here
-    return 'conversationUpdateExtract';
+ try {
+        // Helper to generate UUID if numeric
+        $uuid = fn($prefix, $id) => is_numeric($id)
+            ? Uuid::uuid5(Uuid::NAMESPACE_DNS, "$prefix-$id")->toString()
+            : $id;
+
+        // Handle Account
+        $accountData = $apiData['account'] ?? [];
+        $accountId = isset($accountData['id']) ? $uuid('account', $accountData['id']) : null;
+        if ($accountId) {
+            DB::table('accounts')->updateOrInsert(
+                ['id' => $accountId],
+                ['name' => $accountData['name'] ?? 'Unknown']
+            );
+        }
+
+        // Handle Contact/User (if present in conversation update)
+        $contact = $apiData['conversation']['meta']['sender'] ?? $apiData['contact'] ?? [];
+        $contactId = null;
+        if (!empty($contact) && isset($contact['id'])) {
+            $contactId = $uuid('user', $contact['id']);
+            DB::table('users')->updateOrInsert(
+                ['id' => $contactId],
+                [
+                    'account_id'   => $accountId,
+                    'name'         => $contact['name'] ?? 'Unknown',
+                    'phone_number' => $contact['phone_number'] ?? ($contact['phone'] ?? null),
+                ]
+            );
+        }
+
+        // Handle Conversation Update
+        $conversation = $apiData['conversation'] ?? [];
+        $conversationId = isset($conversation['id']) ? $uuid('conversation', $conversation['id']) : null;
+        
+        if ($conversationId) {
+            $updateData = [
+                'account_id'  => $accountId,
+                'status'      => $conversation['status'] ?? null,
+                'channel'     => $conversation['channel'] ?? null,
+                'labels'      => isset($conversation['labels']) ? json_encode($conversation['labels']) : null,
+                'updated_at'  => isset($conversation['updated_at']) 
+                                ? Carbon::parse($conversation['updated_at'])
+                                : Carbon::now(),
+            ];
+
+            // Only update contact_id if we have a valid contact
+            if ($contactId) {
+                $updateData['contact_id'] = $contactId;
+            }
+
+            // Remove null values to avoid overwriting with null
+            $updateData = array_filter($updateData, function($value) {
+                return $value !== null;
+            });
+
+            DB::table('conversations')->where('id', $conversationId)->update($updateData);
+        }
+
+        return true;
+    } catch (\Exception $e) {
+        Log::error("Conversation Update Extract Failed: " . $e->getMessage());
+        return "Conversation Update Extract Failed: " . $e->getMessage();
+    }
 }
 public function statChangedExtract($apiData)
 {
@@ -220,8 +282,40 @@ public function conversationCreateExtract($apiData)
 }
 public function contactCreateExtract($apiData)
 {
-    // Implement your logic here
-    return 'contactCreateExtract';
+ try {
+        // Helper to generate UUID if numeric
+        $uuid = fn($prefix, $id) => is_numeric($id)
+            ? Uuid::uuid5(Uuid::NAMESPACE_DNS, "$prefix-$id")->toString()
+            : $id;
+
+        // Handle Account 
+        $accountData = $apiData['account'] ?? [];
+        $accountId = isset($accountData['id']) ? $uuid('account', $accountData['id']) : null;
+        if ($accountId) {
+            DB::table('accounts')->updateOrInsert(
+                ['id' => $accountId],
+                ['name' => $accountData['name'] ?? 'Unknown']
+            );
+        }
+
+        // Handle Contact/User
+        $contact = $apiData['contact'] ?? $apiData['user'] ?? [];
+        $contactId = isset($contact['id']) ? $uuid('user', $contact['id']) : Str::uuid()->toString();
+
+        DB::table('users')->updateOrInsert(
+            ['id' => $contactId],
+            [
+                'account_id'   => $accountId,
+                'name'         => $contact['name'] ?? 'Unknown',
+                'phone_number' => $contact['phone_number'] ?? ($contact['phone'] ?? null),
+            ]
+        );
+
+        return true;
+    } catch (\Exception $e) {
+        Log::error("Contact Create Extract Failed: " . $e->getMessage());
+        return "Contact Create Extract Failed: " . $e->getMessage();
+    }
 }
 
 
