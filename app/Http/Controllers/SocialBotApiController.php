@@ -200,8 +200,52 @@ public function messageCreateExtract($apiData)
 
 public function contactUpdateExtract($apiData)
 {
-    // Implement your logic here
-    return 'contactUpdateExtract';
+    try {
+        // Helper to generate UUID if numeric
+        $uuid = fn($prefix, $id) => is_numeric($id)
+            ? Uuid::uuid5(Uuid::NAMESPACE_DNS, "$prefix-$id")->toString()
+            : $id;
+
+        // Handle Account 
+        $accountData = $apiData['account'] ?? [];
+        $accountId = isset($accountData['id']) ? $uuid('account', $accountData['id']) : null;
+        if ($accountId) {
+            DB::table('accounts')->updateOrInsert(
+                ['id' => $accountId],
+                ['name' => $accountData['name'] ?? 'Unknown']
+            );
+        }
+
+        // Handle Contact/User Update
+        $contact = $apiData['contact'] ?? $apiData['user'] ?? [];
+        $contactId = isset($contact['id']) ? $uuid('user', $contact['id']) : null;
+        
+        if ($contactId) {
+            $updateData = [
+                'account_id'   => $accountId,
+                'name'         => $contact['name'] ?? null,
+                'phone_number' => $contact['phone_number'] ?? ($contact['phone'] ?? null),
+                'email'        => $contact['email'] ?? null,
+                'is_business'  => $contact['is_business'] ?? null,
+                'yamm_customer_id' => $contact['yamm_customer_id'] ?? null,
+            ];
+
+            // Remove null values to avoid overwriting with null
+            $updateData = array_filter($updateData, function($value) {
+                return $value !== null;
+            });
+
+            // Only update if we have data to update
+            if (!empty($updateData)) {
+                DB::table('users')->where('id', $contactId)->update($updateData);
+            }
+        }
+
+        return true;
+    } catch (\Exception $e) {
+        Log::error("Contact Update Extract Failed: " . $e->getMessage());
+        return "Contact Update Extract Failed: " . $e->getMessage();
+    }
 }
 public function conversationUpdateExtract($apiData)
 {
