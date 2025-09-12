@@ -198,6 +198,7 @@ public function messageCreateExtract($apiData)
     }
 }
 
+    
 public function contactUpdateExtract($apiData)
 {
     try {
@@ -247,6 +248,8 @@ public function contactUpdateExtract($apiData)
         return "Contact Update Extract Failed: " . $e->getMessage();
     }
 }
+
+    
 public function conversationUpdateExtract($apiData)
 {
  try {
@@ -314,16 +317,78 @@ public function conversationUpdateExtract($apiData)
         return "Conversation Update Extract Failed: " . $e->getMessage();
     }
 }
+
+    
 public function statChangedExtract($apiData)
 {
     // Implement your logic here
     return 'statChangedExtract';
 }
+
+    
 public function conversationCreateExtract($apiData)
 {
-    // Implement your logic here
-    return 'conversationCreateExtract';
+ try {
+        // Helper to generate UUID if numeric
+        $uuid = fn($prefix, $id) => is_numeric($id)
+            ? Uuid::uuid5(Uuid::NAMESPACE_DNS, "$prefix-$id")->toString()
+            : $id;
+
+        // Handle Account
+        $accountData = $apiData['account'] ?? [];
+        $accountId = isset($accountData['id']) ? $uuid('account', $accountData['id']) : null;
+        if ($accountId) {
+            DB::table('accounts')->updateOrInsert(
+                ['id' => $accountId],
+                ['name' => $accountData['name'] ?? 'Unknown']
+            );
+        }
+
+        // Handle Contact/User (if present in conversation creation)
+        $contact = $apiData['conversation']['meta']['sender'] ?? $apiData['contact'] ?? [];
+        $contactId = null;
+        if (!empty($contact) && isset($contact['id'])) {
+            $contactId = $uuid('user', $contact['id']);
+            DB::table('users')->updateOrInsert(
+                ['id' => $contactId],
+                [
+                    'account_id'   => $accountId,
+                    'name'         => $contact['name'] ?? 'Unknown',
+                    'phone_number' => $contact['phone_number'] ?? ($contact['phone'] ?? null),
+                ]
+            );
+        }
+
+        // Handle Conversation Creation
+        $conversation = $apiData['conversation'] ?? [];
+        $conversationId = isset($conversation['id']) ? $uuid('conversation', $conversation['id']) : Str::uuid()->toString();
+        
+        DB::table('conversations')->updateOrInsert(
+            ['id' => $conversationId],
+            [
+                'account_id'  => $accountId,
+                'contact_id'  => $contactId,
+                'assignee_id' => null, // Will be set later when assigned
+                'status'      => $conversation['status'] ?? 'pending',
+                'channel'     => $conversation['channel'] ?? 'unknown',
+                'labels'      => isset($conversation['labels']) ? json_encode($conversation['labels']) : json_encode([]),
+                'created_at'  => isset($conversation['created_at']) 
+                                ? Carbon::parse($conversation['created_at'])
+                                : Carbon::now(),
+                'updated_at'  => isset($conversation['updated_at']) 
+                                ? Carbon::parse($conversation['updated_at'])
+                                : Carbon::now(),
+            ]
+        );
+
+        return true;
+    } catch (\Exception $e) {
+        Log::error("Conversation Create Extract Failed: " . $e->getMessage());
+        return "Conversation Create Extract Failed: " . $e->getMessage();
+    }
 }
+
+    
 public function contactCreateExtract($apiData)
 {
  try {
