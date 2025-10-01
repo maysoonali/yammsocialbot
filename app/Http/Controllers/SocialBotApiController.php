@@ -4,430 +4,228 @@ namespace App\Http\Controllers;
 
 use Carbon\Carbon;
 use Illuminate\Support\Str;
-use App\Models\WebhookEvent;
 use Illuminate\Http\Request;
 use Ramsey\Uuid\Uuid;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Http\Controllers\Controller;
+use App\Models\Account;
+use App\Models\User;
+use App\Models\Conversation;
+use App\Models\Message;
+use App\Models\MessagePayload;
+use App\Models\WebhookEvent;
+
 
 class SocialBotApiController extends Controller
 {
  
-   public function defineAPI(array $data){
-    
+   public function defineAPI(array $data)
+   {
+        // find 'event' 
+        if (isset($data['event'])) {
+            return $data['event']; 
+        }
+        // Return null if not found
+        return 'unfound';
+    } 
 
-    // find 'event' 
-    if (isset($data['event'])) {
 
-       WebhookEvent::create([
-    'id' => Str::uuid(),
-    'event_type' => $data['event'],
-    'raw_payload' => $data,
-    'received_at' => now(),
-    'message_id' => isset($data['message_id']) && Message::where('id', $data['message_id'])->exists()
-        ? $data['message_id']
-        : null
-]);
-        return $data['event'];
+    public function callExtractor(Request $REQUEST)
+    {
+        $apiData =json_decode($REQUEST->input('undifinedAPI'), true);
+        $messageId = null;
+        // Check for JSON errors
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            return "Invalid JSON data: " . json_last_error_msg(); 
+        }
+        // Determine event type 
+        $event = $this->defineAPI($apiData);
+
+        switch ($event) {
+            case 'message_updated':
+            case 'message_created':
+                $this->messageExtract($apiData);
+                return ;
+
+            case 'contact_updated':
+            case 'contact_created':
+                $this->contactExtract($apiData);
+                return ;
+           
+            case 'conversation_updated':
+            case 'conversation_status_changed':
+            case 'conversation_created':
+                $this->conversationExtract($apiData);
+                return ; 
+            default:
+            
+                return $event;
+        }
+           $event = WebhookEvent::create([
+        'id' => $eventId,
+        'event_type' => $event,
+        'raw_payload' => json_encode($apiData),
+        'received_at' => now(),
+        'message_id' => $messageId,
+    ]);
+
     }
-   
-    // Return null if not found
-    return 'unfound';
-} 
 
+    public function messageExtract($apiData)
+    {
 
-public function callExtractor(Request $REQUEST)
-{
-    $apiData =json_decode($REQUEST->input('undifinedAPI'), true);
-    
-    // Check for JSON errors
-    if (json_last_error() !== JSON_ERROR_NONE) {
-        return null; // Invalid JSON
-    } $REQUEST->input('undifinedAPI'); 
-
-    $event = $this->defineAPI($apiData);
-
-    // Switch based on event type
-    switch ($event) {
-        case 'message_updated':
-           // $this->messageUpdateExtract($apiData);
-            return 'messageUpdateExtract($apiData)';
-            
-        case 'message_created':
-            
-            return ($this->messageCreateExtract($apiData)) ;
-            
-        case 'contact_updated':
-           // $this->contactUpdateExtract($apiData);
-            return 'contactUpdateExtract($apiData)';
-            
-        case 'conversation_updated':
-            //$this->conversationUpdateExtract($apiData);
-            return 'conversationUpdateExtract($apiData)';
-            
-        case 'conversation_status_changed':
-            //$this->statChangedExtract($apiData);
-            return 'statChangedExtract($apiData)';
-            
-        case 'conversation_created':
-          //  $this->conversationCreateExtract($apiData);
-            return 'conversationCreateExtract($apiData)';
-            
-        case 'contact_created':
-           // $this->contactCreateExtract($apiData);
-            return 'contactCreateExtract($apiData)';
-            
-        default:
-            /*Log::warning("Unknown event type received: " . $event);
-            throw new \InvalidArgumentException("Unknown event type: " . $event);*/
-            return $event;
-    }
-}
-public function messageUpdateExtract($apiData)
-{
-    
-    return 'messageUpdateExtract';
-}
-
-
-public function messageCreateExtract($apiData)
-{
-    try {
-        // Helper to generate UUID if numeric
-        $uuid = fn($prefix, $id) => is_numeric($id) 
-            ? Uuid::uuid5(Uuid::NAMESPACE_DNS, "$prefix-$id")->toString() 
-            : $id;
-
-        // Handle Account
-        $accountId = $uuid('account', $apiData['account']['id'] ?? null);
-        DB::table('accounts')->updateOrInsert(
-            ['id' => $accountId],
-            ['name' => $apiData['account']['name'] ?? 'Unknown']
-        );
-
-        // Handle User (Contact)
-        $contact = $apiData['conversation']['meta']['sender'] ?? [];
-        $contactId = $uuid('user', $contact['id'] ?? null);
-        DB::table('users')->updateOrInsert(
-            ['id' => $contactId],
+        // Ensure Account exists
+        $accountId = Uuid::uuid5(Uuid::NAMESPACE_DNS, (string) $apiData['account']['id'])->toString();
+        $account = Account::firstOrCreate(
+            ['id' => $accountId,],
             [
-                'account_id'   => $accountId,
-                'name'         => $contact['name'] ?? 'Unknown',
-                'phone_number' => $contact['phone_number'] ?? null,
+                'id' => $accountId,
+                'name' => $apiData['account']['name'],
             ]
         );
 
-        // Handle Conversation
-        $conversation = $apiData['conversation'] ?? [];
-        $conversationId = $uuid('conversation', $conversation['id'] ?? null);
-        DB::table('conversations')->updateOrInsert(
+
+        //  Ensure User (contact or bot) exists
+        $userId = Uuid::uuid5(Uuid::NAMESPACE_DNS, (string) $apiData['sender']['id'])->toString();
+        $sender = $apiData['sender'];
+
+        $user = \App\Models\User::firstOrCreate(
+            ['id' => $userId],
+            [
+                'id' => $userId,
+                'account_id' => $account->id,
+                'name' => $sender['name'],
+                'phone_number' => $apiData['conversation']['meta']['sender']['phone_number'],
+                'email' => $apiData['conversation']['meta']['sender']['email'],
+                'is_business' => false,
+            ]
+        );
+
+        // Ensure Conversation exists
+        $conversationId = Uuid::uuid5(Uuid::NAMESPACE_DNS, (string) $apiData['conversation']['id'])->toString();
+        $conversationData = $apiData['conversation'];
+        $conversation = \App\Models\Conversation::firstOrCreate(
             ['id' => $conversationId],
             [
-                'account_id'  => $accountId,
-                'contact_id'  => $contactId,
-                'assignee_id' => null,
-                'status'      => $conversation['status'] ?? 'pending',
-                'channel'     => $conversation['channel'] ?? 'unknown',
-                'labels'      => json_encode($conversation['labels'] ?? []),
-                'created_at'  => isset($conversation['created_at']) 
-                                ? Carbon::parse($conversation['created_at'])
-                                : Carbon::now(),
-                'updated_at'  => isset($conversation['updated_at']) 
-                                ? Carbon::parse($conversation['updated_at'])
-                                : Carbon::now(),
+                'id' => $conversationId,
+                'account_id' => $account->id,
+                'contact_id' => $user->id,
+                'channel' => $conversationData['channel'],
+                'status' => $conversationData['status'],
+                'labels' => json_encode($conversationData['labels'] ?? []),
+                'created_at' => now(),
+                'updated_at' => now(),
             ]
         );
 
-        // Insert Message
-        $messageId = $uuid('message', $conversation['messages'][0]['id'] ?? null);
-        DB::table('messages')->insert([
-            'id'             => $messageId,
-            'account_id'     => $accountId,
-            'conversation_id'=> $conversationId,
-            'sender_id'      => $contactId,
-            'sender_type'    => $apiData['sender']['type'] ?? 'bot',
-            'message_type'   => $apiData['message_type'] ?? 'outgoing',
-            'content'        => $apiData['content'] ?? null,
-            'content_type'   => $apiData['content_type'] ?? null,
-            'status'         => $conversation['status'] ?? 'sent',
-            'private'        => $apiData['private'] ?? false,
-            'created_at'     => isset($apiData['created_at']) 
-                                ? Carbon::parse($apiData['created_at'])
-                                : Carbon::now(),
-            'updated_at'     => isset($apiData['updated_at']) 
-                                ? Carbon::parse($apiData['updated_at'])
-                                : Carbon::now(),
-            'payload_exist'  => !empty($apiData['content_attributes']['message_payload']),
+        // extract message data to be created or updated
+        $messageData = $conversationData['messages'][0] ?? $apiData;
+        $messageId = Uuid::uuid5(Uuid::NAMESPACE_DNS, (string) $messageData['id'])->toString();
+
+        $message = \App\Models\Message::updateOrCreate(
+            ['id' => $messageId],
+            [
+            'id' => $messageId,
+            'account_id' => $account->id,
+            'conversation_id' => $conversation->id,
+            'sender_id' => $user->id,
+            'sender_type' => strtolower($messageData['sender_type'] ?? 'contact'),
+            'message_type' => $messageData['message_type'],
+            'content' => $messageData['content'],
+            'content_type' => $messageData['content_type'],
+            'status' => $messageData['status'],
+            'private' => $messageData['private'],
+            'created_at' => date('Y-m-d H:i:s', $messageData['created_at']),
+            'updated_at' => $messageData['updated_at'],
+            'payload_exist' => !empty($messageData['payload']),
         ]);
 
-        // Insert Payload(s)
-        $payload = $apiData['content_attributes']['message_payload'] ?? null;
-        if ($payload) {
-            $mainContent = $payload['content'] ?? [];
-            
-            // Save main payload
-            DB::table('message_payloads')->insert([
-                'id'         => Str::uuid()->toString(),
-                'message_id' => $messageId,
-                'title'      => $mainContent['title'] ?? null,
-                'payload'    => json_encode($mainContent['buttons'] ?? []),
-                'type'       => $payload['content_type'] ?? null,
-                'image_url'  => $mainContent['image'] ?? null,
-                'footer'     => $mainContent['footer'] ?? null,
+        // MessagePayload (if present)
+        if (!empty($messageData['payload'])) {
+            \App\Models\MessagePayload::updateOrCreate(
+                ['id' => Uuid::uuid5(Uuid::NAMESPACE_DNS, (string) $messageData['id'] . '-payload')->toString()],
+                [
+                'id' => Uuid::uuid5(Uuid::NAMESPACE_DNS, (string) $messageData['id'] . '-payload')->toString(),
+                'message_id' => $message->id,
+                'title' => $messageData['payload']['title'] ?? null,
+                'payload' => $messageData['payload']['body'] ?? null,
+                'type' => $messageData['payload']['type'] ?? null,
+                'image_url' => $messageData['payload']['image_url'] ?? null,
+                'footer' => $messageData['payload']['footer'] ?? null,
             ]);
-
-            // Save each button individually
-            foreach ($mainContent['buttons'] ?? [] as $button) {
-                DB::table('message_payloads')->insert([
-                    'id'         => Str::uuid()->toString(),
-                    'message_id' => $messageId,
-                    'title'      => $button['content']['title'] ?? null,
-                    'payload'    => $button['content']['payload'] ?? null,
-                    'type'       => $button['content_type'] ?? null,
-                    'image_url'  => null,
-                    'footer'     => null,
-                ]);
-            }
         }
 
-        return true;
-    } catch (\Exception $e) {
-        Log::error("Message Create Extract Failed: " . $e->getMessage());
-        return "Message Create Extract Failed: " . $e->getMessage();
+        return $message;
     }
-}
-
     
-public function contactUpdateExtract($apiData)
-{
-    try {
-        // Helper to generate UUID if numeric
-        $uuid = fn($prefix, $id) => is_numeric($id)
-            ? Uuid::uuid5(Uuid::NAMESPACE_DNS, "$prefix-$id")->toString()
-            : $id;
+    public function conversationExtract($apiData){
+        // Ensure Account exists
+        $accountId = Uuid::uuid5(Uuid::NAMESPACE_DNS, (string) $apiData['messages'][0]['account_id'])->toString();
+        $account = Account::firstOrCreate(
+            ['id' => $accountId,],
+            [
+                'id' => $accountId,
+                'name' => "Unknown Account",
+            ]
+        );
+        //  Ensure User (contact or bot) exists
+        $userId = Uuid::uuid5(Uuid::NAMESPACE_DNS, (string) $apiData['sender']['id'])->toString();
+        $user = \App\Models\User::firstOrCreate(
+            ['id' => $userId],
+            [
+                'id' => $userId,
+                'account_id' => $account->id,
+                'name' => $apiData['name'],
+                'phone_number' => $apiData['phone_number'],
+                'email' => $apiData['conversation']['meta']['sender']['email'],
+                'is_business' => false,
+            ]
+        );
 
-        // Handle Account 
-        $accountData = $apiData['account'] ?? [];
-        $accountId = isset($accountData['id']) ? $uuid('account', $accountData['id']) : null;
-        if ($accountId) {
-            DB::table('accounts')->updateOrInsert(
-                ['id' => $accountId],
-                ['name' => $accountData['name'] ?? 'Unknown']
-            );
-        }
+        $conversationId = Uuid::uuid5(Uuid::NAMESPACE_DNS, (string) $apiData['id'])->toString();      
+        $contactId = Uuid::uuid5(Uuid::NAMESPACE_DNS, (string) $apiData['contact_inbox']['contact_id'])->toString();      
 
-        // Handle Contact/User Update
-        $contact = $apiData['contact'] ?? $apiData['user'] ?? [];
-        $contactId = isset($contact['id']) ? $uuid('user', $contact['id']) : null;
-        
-        if ($contactId) {
-            $updateData = [
-                'account_id'   => $accountId,
-                'name'         => $contact['name'] ?? null,
-                'phone_number' => $contact['phone_number'] ?? ($contact['phone'] ?? null),
-                'email'        => $contact['email'] ?? null,
-                'is_business'  => $contact['is_business'] ?? null,
-                'yamm_customer_id' => $contact['yamm_customer_id'] ?? null,
-            ];
-
-            // Remove null values to avoid overwriting with null
-            $updateData = array_filter($updateData, function($value) {
-                return $value !== null;
-            });
-
-            // Only update if we have data to update
-            if (!empty($updateData)) {
-                DB::table('users')->where('id', $contactId)->update($updateData);
-            }
-        }
-
-        return true;
-    } catch (\Exception $e) {
-        Log::error("Contact Update Extract Failed: " . $e->getMessage());
-        return "Contact Update Extract Failed: " . $e->getMessage();
-    }
-}
-
-    
-public function conversationUpdateExtract($apiData)
-{
- try {
-        // Helper to generate UUID if numeric
-        $uuid = fn($prefix, $id) => is_numeric($id)
-            ? Uuid::uuid5(Uuid::NAMESPACE_DNS, "$prefix-$id")->toString()
-            : $id;
-
-        // Handle Account
-        $accountData = $apiData['account'] ?? [];
-        $accountId = isset($accountData['id']) ? $uuid('account', $accountData['id']) : null;
-        if ($accountId) {
-            DB::table('accounts')->updateOrInsert(
-                ['id' => $accountId],
-                ['name' => $accountData['name'] ?? 'Unknown']
-            );
-        }
-
-        // Handle Contact/User (if present in conversation update)
-        $contact = $apiData['conversation']['meta']['sender'] ?? $apiData['contact'] ?? [];
-        $contactId = null;
-        if (!empty($contact) && isset($contact['id'])) {
-            $contactId = $uuid('user', $contact['id']);
-            DB::table('users')->updateOrInsert(
-                ['id' => $contactId],
-                [
-                    'account_id'   => $accountId,
-                    'name'         => $contact['name'] ?? 'Unknown',
-                    'phone_number' => $contact['phone_number'] ?? ($contact['phone'] ?? null),
-                ]
-            );
-        }
-
-        // Handle Conversation Update
-        $conversation = $apiData['conversation'] ?? [];
-        $conversationId = isset($conversation['id']) ? $uuid('conversation', $conversation['id']) : null;
-        
-        if ($conversationId) {
-            $updateData = [
-                'account_id'  => $accountId,
-                'status'      => $conversation['status'] ?? null,
-                'channel'     => $conversation['channel'] ?? null,
-                'labels'      => isset($conversation['labels']) ? json_encode($conversation['labels']) : null,
-                'updated_at'  => isset($conversation['updated_at']) 
-                                ? Carbon::parse($conversation['updated_at'])
-                                : Carbon::now(),
-            ];
-
-            // Only update contact_id if we have a valid contact
-            if ($contactId) {
-                $updateData['contact_id'] = $contactId;
-            }
-
-            // Remove null values to avoid overwriting with null
-            $updateData = array_filter($updateData, function($value) {
-                return $value !== null;
-            });
-
-            DB::table('conversations')->where('id', $conversationId)->update($updateData);
-        }
-
-        return true;
-    } catch (\Exception $e) {
-        Log::error("Conversation Update Extract Failed: " . $e->getMessage());
-        return "Conversation Update Extract Failed: " . $e->getMessage();
-    }
-}
-
-    
-public function statChangedExtract($apiData)
-{
-    // Implement your logic here
-    return 'statChangedExtract';
-}
-
-    
-public function conversationCreateExtract($apiData)
-{
- try {
-        // Helper to generate UUID if numeric
-        $uuid = fn($prefix, $id) => is_numeric($id)
-            ? Uuid::uuid5(Uuid::NAMESPACE_DNS, "$prefix-$id")->toString()
-            : $id;
-
-        // Handle Account
-        $accountData = $apiData['account'] ?? [];
-        $accountId = isset($accountData['id']) ? $uuid('account', $accountData['id']) : null;
-        if ($accountId) {
-            DB::table('accounts')->updateOrInsert(
-                ['id' => $accountId],
-                ['name' => $accountData['name'] ?? 'Unknown']
-            );
-        }
-
-        // Handle Contact/User (if present in conversation creation)
-        $contact = $apiData['conversation']['meta']['sender'] ?? $apiData['contact'] ?? [];
-        $contactId = null;
-        if (!empty($contact) && isset($contact['id'])) {
-            $contactId = $uuid('user', $contact['id']);
-            DB::table('users')->updateOrInsert(
-                ['id' => $contactId],
-                [
-                    'account_id'   => $accountId,
-                    'name'         => $contact['name'] ?? 'Unknown',
-                    'phone_number' => $contact['phone_number'] ?? ($contact['phone'] ?? null),
-                ]
-            );
-        }
-
-        // Handle Conversation Creation
-        $conversation = $apiData['conversation'] ?? [];
-        $conversationId = isset($conversation['id']) ? $uuid('conversation', $conversation['id']) : Str::uuid()->toString();
-        
-        DB::table('conversations')->updateOrInsert(
+        $conversation = \App\Models\Conversation::updateOrCreate(
             ['id' => $conversationId],
             [
-                'account_id'  => $accountId,
-                'contact_id'  => $contactId,
-                'assignee_id' => null, // Will be set later when assigned
-                'status'      => $conversation['status'] ?? 'pending',
-                'channel'     => $conversation['channel'] ?? 'unknown',
-                'labels'      => isset($conversation['labels']) ? json_encode($conversation['labels']) : json_encode([]),
-                'created_at'  => isset($conversation['created_at']) 
-                                ? Carbon::parse($conversation['created_at'])
-                                : Carbon::now(),
-                'updated_at'  => isset($conversation['updated_at']) 
-                                ? Carbon::parse($conversation['updated_at'])
-                                : Carbon::now(),
+                'id' => $conversationId,
+                'account_id' => $account->id,
+                'contact_id' => $contactId,
+                'channel' => $apiData['channel'],
+                'status' => $apiData['status'],
+                'labels' => json_encode($apiData['labels'] ?? []),
+                
             ]
-        );
+        );    return $conversation;
 
-        return true;
-    } catch (\Exception $e) {
-        Log::error("Conversation Create Extract Failed: " . $e->getMessage());
-        return "Conversation Create Extract Failed: " . $e->getMessage();
     }
-}
-
-    
-public function contactCreateExtract($apiData)
-{
- try {
-        // Helper to generate UUID if numeric
-        $uuid = fn($prefix, $id) => is_numeric($id)
-            ? Uuid::uuid5(Uuid::NAMESPACE_DNS, "$prefix-$id")->toString()
-            : $id;
-
-        // Handle Account 
-        $accountData = $apiData['account'] ?? [];
-        $accountId = isset($accountData['id']) ? $uuid('account', $accountData['id']) : null;
-        if ($accountId) {
-            DB::table('accounts')->updateOrInsert(
-                ['id' => $accountId],
-                ['name' => $accountData['name'] ?? 'Unknown']
-            );
-        }
-
-        // Handle Contact/User
-        $contact = $apiData['contact'] ?? $apiData['user'] ?? [];
-        $contactId = isset($contact['id']) ? $uuid('user', $contact['id']) : Str::uuid()->toString();
-
-        DB::table('users')->updateOrInsert(
-            ['id' => $contactId],
+        
+    public function contactExtract($apiData)
+    {
+        // Ensure Account exists
+        $accountId = Uuid::uuid5(Uuid::NAMESPACE_DNS, (string) $apiData['account']['id'])->toString();
+        $account = Account::firstOrCreate(
+            ['id' => $accountId,],
             [
-                'account_id'   => $accountId,
-                'name'         => $contact['name'] ?? 'Unknown',
-                'phone_number' => $contact['phone_number'] ?? ($contact['phone'] ?? null),
+                'id' => $accountId,
+                'name' => $apiData['account']['name'],
             ]
         );
-
-        return true;
-    } catch (\Exception $e) {
-        Log::error("Contact Create Extract Failed: " . $e->getMessage());
-        return "Contact Create Extract Failed: " . $e->getMessage();
+        //User (contact) creation or update
+        $userId = Uuid::uuid5(Uuid::NAMESPACE_DNS, (string) $apiData['id'])->toString();
+        $user = \App\Models\User::updateOrCreate(
+            ['id' => $userId],
+            [
+                'id' => $userId,
+                'account_id' => $accountId,
+                'name' => $apiData['name'],
+                'phone_number' => $apiData['phone_number'],
+                'email' => $apiData['email'],
+                'is_business' => false,
+            ]
+        );
+        return ;
     }
-}
-
-
-
 
 }
